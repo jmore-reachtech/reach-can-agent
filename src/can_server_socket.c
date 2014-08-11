@@ -103,7 +103,7 @@ int canServerSocketRead(int socketFd, char *msgBuff)
     }
     else
     {
-        strncpy(msgBuff, (char *)frame.data, 7);
+        strncpy(msgBuff, (char *)frame.data, 8);
         cnt = frame.can_dlc;
         msgBuff[cnt] = '\0';
         LogMsg(LOG_INFO, "%s: buff = %s", __FUNCTION__, msgBuff);
@@ -116,8 +116,8 @@ int canServerSocketRead(int socketFd, char *msgBuff)
 void canServerSocketWrite(int socketFd, const char *buff)
 {
     int cnt = strlen(buff);
-    if (cnt > 7)
-        cnt = 7;
+    if (cnt > 8)
+        cnt = 8;
     int i = 0;
     struct can_frame frame;
 
