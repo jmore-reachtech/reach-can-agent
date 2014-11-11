@@ -104,7 +104,7 @@ int main(int argc, char *argv[])
 
 static void canDumpHelp()
 {
-    //fprintf(stderr, "CAN Agent %s \n\n", CAN_VERSION);
+    fprintf(stderr, "CAN Agent %s \n\n", CAN_VERSION);
 
     fprintf(stderr, "usage: %s [options]\n"
             "  where options are:\n"
