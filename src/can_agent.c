@@ -316,33 +316,15 @@ static ethIf_t * network_open(uint8_t instance, int baudRate)
 
     strcpy(ep->if_name, if_name);
 
-    // Load flexcan
-    sprintf(cmd, "modprobe flexcan && rmmod flexcan");
+    // Load can config
+    sprintf(cmd, "canconfig %s bitrate %d", if_name, baudRate);
     rv = execute_cmd_ex(cmd, NULL, 0);
     if (rv < 0)
     {
         LogMsg(LOG_ERR, "Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
         exit(1);
     }
-    LogMsg(LOG_INFO, "cmd run: modprobe flexcan && rmmod flexcan\n");
-
-    sprintf(cmd, "modprobe flexcan");
-    rv = execute_cmd_ex(cmd, NULL, 0);
-    if (rv < 0)
-    {
-        LogMsg(LOG_ERR, "Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
-        exit(1);
-    }
-    LogMsg(LOG_INFO, "cmd run: modprobe flexcan\n");
-
-
-    sprintf(cmd, "echo %d >  /sys/devices/platform/FlexCAN.0/bitrate", baudRate);
-    if (execute_cmd_ex(cmd, NULL, 0) < 0)
-    {
-        fprintf(stderr, "Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
-        exit(1);
-    }
-    LogMsg(LOG_INFO, "cmd run: echo %d >  /sys/devices/platform/FlexCAN.0/bitrate\n", baudRate);
+    LogMsg(LOG_INFO, "cmd run: %s\n", cmd);
 
     ep->flags |= _NET_CAN_LOADED;
 
@@ -388,15 +370,6 @@ static int network_close(ethIf_t *ep)
         if (ep->flags & _NET_CAN_LOADED)
         {
             ep->flags &= ~_NET_CAN_LOADED;
-
-            sprintf(cmd, "rmmod flexcan");
-            rv = execute_cmd_ex(cmd, NULL, 0);
-            if (rv < 0)
-            {
-                LogMsg(LOG_ERR, "Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
-                status = rv;
-            }
-            LogMsg(LOG_INFO, "cmd run: rmmod flexcan\n");
         }
 
         free(ep);
