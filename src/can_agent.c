@@ -316,6 +316,16 @@ static ethIf_t * network_open(uint8_t instance, int baudRate)
 
     strcpy(ep->if_name, if_name);
 
+
+    sprintf(cmd, "modprobe flexcan");
+    rv = execute_cmd_ex(cmd, NULL, 0);
+    if (rv < 0)
+    {
+        LogMsg(LOG_ERR, "Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
+        exit(1);
+    }
+    LogMsg(LOG_INFO, "cmd run: modprobe flexcan\n");
+
     // Load can config
     sprintf(cmd, "canconfig %s bitrate %d", if_name, baudRate);
     rv = execute_cmd_ex(cmd, NULL, 0);
