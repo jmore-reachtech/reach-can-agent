@@ -6,17 +6,16 @@
 #include <stdint.h>
 
 /* functions defined in can_server_socket.c */
-int canServerSocketInit(int instance);
-int canServerSocketRead(int newFd, char *msgBuff);
-void canServerSocketWrite(int socketFd, const char *buff);
+int canBusSocketInit(int canPort);
+int canBusSocketRead(int newFd, char *msgBuff);
+void canBusSocketWrite(int socketFd, const char *buff);
 
 
-/* functions defined in can_tio_socket.c */
-int canTioSocketInit(int *addressFamily,
-    const char *unixSocketPath);
-int canTioSocketAccept(int serverFd, int addressFamily);
-int canTioSocketRead(int newFd, char *msgBuff, size_t bufferSize);
-void canTioSocketWrite(int socketFd, const char *buff);
+/* functions defined in can_tcp_socket.c */
+/* functions defined in sio_socket.c */
+int canQMLConnect(unsigned short port);
+int canQMLSocketRead(int newFd, char *msgBuff, size_t bufferSize);
+void canQMLSocketWrite(int socketFd, const char *buff);
 
 /* functions defined in can_local.c */
 char *canHandleLocal(char *qmlString);
@@ -27,9 +26,9 @@ void LogOpen(const char *ident, int logToSyslog, const char *logFilePath,
 void LogMsg(int level, const char *fmt, ...);
 
 #define CAN_DEFAULT_SERVER_AGENT_PORT 0
-#define CAN_AGENT_UNIX_SOCKET "/tmp/sioSocket"
+#define TCP_DEFAULT_PORT 4000
 
-#define CAN_BUFFER_SIZE 256
+#define CAN_BUFFER_SIZE 128
 #define CAN_BAUD_RATE 1000000
 #define NETWORK_CAN     2
 

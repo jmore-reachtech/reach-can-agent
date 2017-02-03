@@ -18,11 +18,19 @@
 
 static void canDieWithError(char *errorMessage)
 {
-    LogMsg(LOG_ERR, "Exiting: %s\n", errorMessage);
+    LogMsg(LOG_ERR, "[CAN] exiting: %s\n", errorMessage);
     exit(1);
 }
 
-static int canCreateServerSocket(int instance)
+/**
+ * Initializes a socket for read and writes to the CAN bus
+ * port.
+ *
+ * @param canPort the CAN bus interface to bind to.
+ *
+ */
+
+int canBusSocketInit(int canPort)
 {
     int sock = -1;
     int rv = 0;
@@ -32,17 +40,17 @@ static int canCreateServerSocket(int instance)
     sock = socket(PF_CAN, SOCK_RAW, CAN_RAW);
     if (sock < 0)
     {
-        canDieWithError("can socket() failed");
+        canDieWithError("[CAN] can socket() failed");
     }
 
     memset(&ifr, 0, sizeof(ifr));
-    sprintf(ifr.ifr_name, "can%d", instance);
+    sprintf(ifr.ifr_name, "can%d", canPort);
 
 
     rv = ioctl(sock, SIOGIFINDEX, &ifr);
     if (rv < 0)
     {
-        canDieWithError("Error: ioctl(SIOGIFINDEX) failed CAN BUS may not be up.");
+        canDieWithError("[CAN] Error: ioctl(SIOGIFINDEX) failed CAN BUS may not be up.");
     }
 
     memset(&sAddr, 0, sizeof(sAddr));
@@ -53,51 +61,40 @@ static int canCreateServerSocket(int instance)
 
 
     if (rv < 0)
-    {
-        canDieWithError("Error: CAN bind() failed.");
-    }
+        canDieWithError("[CAN] Error: CAN bind() failed.");
 
-    LogMsg(LOG_INFO, "Handling CAN Bus client\n");
+    LogMsg(LOG_INFO, "[CAN] handling CAN bus client\n");
 
     return sock;
-}
-
-int canServerSocketInit(int instance)
-{
-    int listenFd = -1;
-    listenFd = canCreateServerSocket(instance);
-    return listenFd;
 }
 
 
 /**
  * Reads a single message from the socket connected to the 
- * tcp/ip server port. If no message is ready to be received, the call
+ * can bus port. If no message is ready to be received, the call
  * will block until one is available. 
  * 
- * @param socketFd the file descriptor of for the already open 
- *                 socket connecting to the tio-agent
+ * @param socketFd the file descriptor for the already open
+ *                 socket connecting to the CAN bus
  * @param msgBuff address of a contiguous array into which the 
- *                message will be written upon receipt from the
- *                tio-agent
- * @param bufferSize the number of bytes in msgBuff
- * 
+ *                message will be written upon receipt
+ *                from CAN bus
+ *
  * @return int 0 if no message to return (handled here), -1 if 
  *         recv() returned an error code (close connection) or
  *         >0 to indicate msgBuff has that many characters
  *         filled in
  */
-int canServerSocketRead(int socketFd, char *msgBuff)
+int canBusSocketRead(int socketFd, char *msgBuff)
 {
     int cnt;
-    int i;
     struct can_frame frame;
     memset(&frame, 0, sizeof(frame));
     cnt = read(socketFd, &frame, sizeof(frame));
 
     if (cnt < 0)
     {
-        LogMsg(LOG_INFO, "%s(): recv() failed, client closed\n", __FUNCTION__);
+        LogMsg(LOG_INFO, "[CAN] %s(): recv() failed, client closed\n", __FUNCTION__);
         close(socketFd);
         return -1;
     }
@@ -106,35 +103,42 @@ int canServerSocketRead(int socketFd, char *msgBuff)
         strncpy(msgBuff, (char *)frame.data, 8);
         cnt = frame.can_dlc;
         msgBuff[cnt] = '\0';
-        LogMsg(LOG_INFO, "%s: buff = %s", __FUNCTION__, msgBuff);
+        LogMsg(LOG_INFO, "[CAN] received = %s", msgBuff);
         return cnt;
     }
 
 }
 
-
-void canServerSocketWrite(int socketFd, const char *buff)
+/**
+ * Writes a single message to the socket connected to the
+ * CAN bus port.
+ *
+ * @param socketFd the file descriptor for the already open
+ *                 socket connecting to the CAN bus
+ * @param msgBuff  address of a contiguous array that contains
+ *                 the message.
+ *
+ */
+void canBusSocketWrite(int socketFd, const char *msgBuff)
 {
-    int cnt = strlen(buff);
+    struct can_frame frame;
+    int cnt = strlen(msgBuff);
     if (cnt > 8)
         cnt = 8;
-    int i = 0;
-    struct can_frame frame;
 
     memset(&frame, 0, sizeof(frame));
-
     frame.can_id = 0;
-    strncpy((char *)frame.data, buff, cnt);
+    strncpy((char *)frame.data, msgBuff, cnt);
     frame.can_dlc = cnt;
 
     if (write(socketFd, &frame, sizeof(frame)) < 0) {
-        LogMsg(LOG_ERR, "CAN BUS: write() failed, %d\n",
+        LogMsg(LOG_ERR, "[CAN] CAN BUS: write() failed, %d\n",
             socketFd);
         perror("what's messed up?");
     }
     else
     {
-        LogMsg(LOG_INFO, "%s: sent = %s", __FUNCTION__, frame.data);
+        LogMsg(LOG_INFO, "[CAN] sent = %s", frame.data);
     }
 }
 

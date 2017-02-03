@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <ctype.h>
 
 #include "can_agent.h"
 
@@ -15,18 +16,18 @@ static int keepGoing;
 static const char *progName;
 
 static void canDumpHelp();
-static void canAgent(unsigned short tcpPort, int baudRate, const char *unixSocketPath);
+static void canAgent(unsigned short canPort, int baudRate, int tcpPort);
 static inline int max(int a, int b) { return (a > b) ? a : b; }
 static ethIf_t * network_open(uint8_t instance, int baudRate);
 static int network_close(ethIf_t *ep);
-static int execute_cmd_ex(const char *cmd, char *result, int result_size);
-
+static int execute_cmd_ex(const char *cmd, char *result, size_t result_size);
 
 int main(int argc, char *argv[])
 {
     int daemonFlag = 0;
     unsigned short canPort = 0;
     int baudRate = 0;
+    int tcpPort = 0;
     const char *logFilePath = 0;
     /*
      * syslog isn't installed on the target so it's disabled in this program
@@ -47,11 +48,12 @@ int main(int argc, char *argv[])
             { "log",         required_argument, 0, 'o' },
             { "can_port",    required_argument, 0, 'c' },
             { "baudrate",    required_argument, 0, 'b' },
+            { "tcp_port",    required_argument, 0, 'p' },
             { "verbose",     no_argument,       0, 'v' },
             { "help",        no_argument,       0, 'h' },
             { 0,             0, 0,  0  }
         };
-        int c = getopt_long(argc, argv, "d:o:c:b:vh?", longOptions, 0);
+        int c = getopt_long(argc, argv, "d:o:c:b:p:vh?", longOptions, 0);
 
         if (c == -1) {
             break;  // no more options to process
@@ -77,7 +79,9 @@ int main(int argc, char *argv[])
         case 'b':
             baudRate = (optarg == 0) ? CAN_BAUD_RATE : atoi(optarg);
             break;
-
+        case 'p':
+            tcpPort =  (optarg == 0) ? TCP_DEFAULT_PORT : atoi(optarg);
+            break;
         case 'v':
             verboseFlag = 1;
             break;
@@ -97,7 +101,7 @@ int main(int argc, char *argv[])
         daemon(0, 1);
     }
 
-    canAgent(canPort, baudRate, CAN_AGENT_UNIX_SOCKET);
+    canAgent(canPort, baudRate, tcpPort);
 
     return 0;
 }
@@ -112,12 +116,13 @@ static void canDumpHelp()
             "    -o<path>       | --logfile=<path>    log to file instead of stderr\n"
             "    -c[<port>]     | --can_port[=<port>] CAN bus port 0, 1 ,2 \n"
             "    -b<baudrate>   | --baudrate          baudrate of CAN bus \n"
+            "    -p<port>       | --tcp-port[=port]   TCP port of Qml viewer \n"
             "    -v             | --verbose           print progress messages\n"
             "    -h             | -? | --help         print usage information\n",
-            progName, CAN_DEFAULT_SERVER_AGENT_PORT);
+            progName);
 }
 
-static void canInterruptHandler(int sig)
+static void canInterruptHandler()
 {
     keepGoing = 0;
 }
@@ -130,90 +135,76 @@ static void canInterruptHandler(int sig)
  * @param canPort the port number to open for
  *        accepting connections from the CAN Bus 0 for can0 1 for can1 ect;
  *
- * @param unixSocketPath the file system path to use for a Unix domain socket;
+ * @param tcpPort the port number to use for the TCP/IP socket;
  */
-static void canAgent(unsigned short canPort, int baudRate, const char *unixSocketPath)
+static void canAgent(unsigned short canPort, int baudRate, int tcpPort)
 {
     int n;
     ethIf_t *ep = NULL;
     fd_set currFdSet;
     FD_ZERO(&currFdSet);
 
-    /********************************* Open CAN BUS network ********************************/
+    /* open CAN bus network */
     ep = network_open(canPort, baudRate);
     if (ep == NULL)
     {
-        LogMsg(LOG_ERR, "Error: %s: network_open() failed: %s [%d]\n", __FUNCTION__, strerror(errno), errno);
+        LogMsg(LOG_ERR, "[CAN] Error: %s: network_open() failed: %s [%d]\n", __FUNCTION__, strerror(errno), errno);
         exit(1);
     }
 
-    /********************************** Set up TIO Socket ***********************************/
-    int connectedTIOFd = -1;  /* not currently connected */
 
-    {
-        /* install a signal handler to remove the socket file */
-        struct sigaction a;
-        memset(&a, 0, sizeof(a));
-        a.sa_handler = canInterruptHandler;
-        if (sigaction(SIGINT, &a, 0) != 0) {
-            LogMsg(LOG_ERR, "sigaction() failed, errno = %d\n", errno);
-            exit(1);
-        }
+    /* add signal handlers for cleanup and shut down of CAN bus network*/
+    struct sigaction a;
+    memset(&a, 0, sizeof(a));
+    a.sa_handler = canInterruptHandler;
+    if (sigaction(SIGINT, &a, 0) != 0) {
+        LogMsg(LOG_ERR, "[CAN] sigaction() failed, errno = %d\n", errno);
+        exit(1);
     }
 
-    /* open the tio socket */
-    int addressTIOFamily = 0;
-    const int listenTIOFd = canTioSocketInit(&addressTIOFamily,
-                                             unixSocketPath);
-    if (listenTIOFd < 0) {
-        /* open failed, can't continue */
-        LogMsg(LOG_ERR, "could not open tio socket\n");
-        return;
-    }
-    else
-    {
-        LogMsg(LOG_INFO, "TIO Unix Socket Open\n");
+    if (sigaction(SIGTERM, &a, 0) != 0) {
+        LogMsg(LOG_ERR, "[CAN] sigaction() failed, errno = %d\n", errno);
+        exit(1);
     }
 
-    FD_SET(listenTIOFd, &currFdSet);
+    /* open TCP/IP Socket */
+    int  qmlFd = canQMLConnect(tcpPort);
+    FD_ZERO(&currFdSet);
+    FD_SET(qmlFd, &currFdSet);
 
-    /********************************** Set up CAN Bus Socket ***********************************/
+    /* set up CAN bus Socket */
     int connectedServerFd = -1;  /* not currently connected */
 
-    /* open the server socket */
-    connectedServerFd = canServerSocketInit(canPort);
+    /* open the CAN bus server socket */
+    connectedServerFd = canBusSocketInit(canPort);
     if (connectedServerFd < 0) {
         /* open failed, can't continue */
-        LogMsg(LOG_ERR, "could not open CAN Bus socket\n");
+        LogMsg(LOG_ERR, "[CAN] could not open CAN Bus socket\n");
         return;
     }
 
     FD_SET(connectedServerFd, &currFdSet);
 
-    n = max(connectedServerFd, listenTIOFd) + 1;
+    n = max(connectedServerFd, qmlFd) + 1;
 
-    /* execution remains in this loop until a fatal error or SIGINT */
+    /* execution remains in this loop until a fatal error, SIGINT of SIGTERM */
     keepGoing = 1;
 
     while (keepGoing) {
+        fd_set readFdSet = currFdSet;
+
         /*
          * This is the select loop which waits for characters to be received on
-         * the CAN bus and on either the listen socket (meaning
-         * an incoming connection is queued) or on a connected socket
-         * descriptor.
+         * the CAN bus socket or on the client TCP/IP socket descriptor.
          */
 
-        /* check for packet received on the server socket or tio socket */
-        //wait for a message
-
-        fd_set readFdSet = currFdSet;
         const int sel = select(n, &readFdSet, 0, 0, 0);
 
         if (sel == -1) {
             if (errno == EINTR) {
                 break;  /* drop out of while */
             } else {
-                LogMsg(LOG_ERR, "select() returned -1, errno = %d\n", errno);
+                LogMsg(LOG_ERR, "[CAN] select() returned -1, errno = %d\n", errno);
                 exit(1);
             }
         } else if (sel <= 0) {
@@ -221,85 +212,58 @@ static void canAgent(unsigned short canPort, int baudRate, const char *unixSocke
         }
 
 
+        /* check for packet received on the CAN bus socket */
         if (FD_ISSET(connectedServerFd, &readFdSet)) {
             // read CAN frames
-            char msgBuff[128];
-            const int readCount = canServerSocketRead(connectedServerFd, msgBuff);
+            char msgBuff[CAN_BUFFER_SIZE];
+            const int readCount = canBusSocketRead(connectedServerFd, msgBuff);
             if (readCount > 0) {
-                if (connectedTIOFd >= 0)
-                {
-                    canTioSocketWrite(connectedTIOFd, msgBuff);
-                    n = max(connectedTIOFd, connectedServerFd)  + 1;
-                }
+                    canQMLSocketWrite(qmlFd, msgBuff);
             }
         }
 
-        /* check for a new tio connection to accept */
-        if (FD_ISSET(listenTIOFd, &readFdSet)) {
-            /* new connection is here, accept it */
-            connectedTIOFd = canTioSocketAccept(listenTIOFd, addressTIOFamily);
-            if (connectedTIOFd >= 0) {
-                FD_CLR(listenTIOFd, &currFdSet);
-                FD_SET(connectedTIOFd, &currFdSet);
-                n = max(connectedTIOFd, connectedServerFd)  + 1;
-            }
-        }
-
-        /* check for packet received on the tio socket */
-        if ((connectedTIOFd >= 0) && FD_ISSET(connectedTIOFd, &readFdSet)) {
-            /* connected tio_agent has something to relay to can bus */
-            char msgBuff[128];
-            const int readCount = canTioSocketRead(connectedTIOFd, msgBuff,
-                                                   sizeof(msgBuff));
+        /* check for packet received on the tcp socket */
+        if (FD_ISSET(qmlFd, &readFdSet)) {
+            /* qml-viewer has something to relay to serial port */
+            char msgBuff[CAN_BUFFER_SIZE];
+            const int readCount = canQMLSocketRead(qmlFd, msgBuff,
+                sizeof(msgBuff));
             if (readCount < 0) {
-                FD_CLR(connectedTIOFd, &currFdSet);
-                FD_SET(listenTIOFd, &currFdSet);
-                n = max(listenTIOFd, connectedServerFd) + 1;
-                connectedTIOFd = -1;
+                FD_CLR(qmlFd, &currFdSet);
+                qmlFd = -1;
             } else if (readCount > 0) {
-                if (connectedServerFd >= 0)
-                    canServerSocketWrite(connectedServerFd, msgBuff);
+                canBusSocketWrite(connectedServerFd, msgBuff);
             }
         }
 
     } /* end while */
 
-    LogMsg(LOG_INFO, "cleaning up\n");
+    LogMsg(LOG_INFO, "[CAN] cleaning up\n");
 
-    if (connectedTIOFd >= 0) {
-        close(connectedTIOFd);
-    }
-    if (listenTIOFd >= 0) {
-        close(listenTIOFd);
+    if (qmlFd >= 0) {
+        close(qmlFd);
     }
 
     if (connectedServerFd >= 0) {
         close(connectedServerFd);
     }
 
-    /* best effort removal of socket */
-    const int rv = unlink(unixSocketPath);
-    if (rv == 0) {
-        LogMsg(LOG_INFO, "socket file %s unlinked\n", unixSocketPath);
-    } else {
-        LogMsg(LOG_INFO, "socket file %s unlink failed\n", unixSocketPath);
-    }
-
+    /* close the CAN network */
     if (network_close(ep) < 0)
     {
-        LogMsg(LOG_INFO, "network close failed.\n");
+        LogMsg(LOG_INFO, "[CAN] network close failed.\n");
     }
 
 }
 
-/****************************************************************************
- * network_open
- */
+/*
+* Open the CAN bus network
+*/
 static ethIf_t * network_open(uint8_t instance, int baudRate)
 {
     ethIf_t *ep = NULL;
     char if_name[32];
-    char cmd[128];
+    char cmd[512];
     int rv = 0;
     int n;
 
@@ -316,33 +280,30 @@ static ethIf_t * network_open(uint8_t instance, int baudRate)
 
     strcpy(ep->if_name, if_name);
 
-    // Load flexcan
-    sprintf(cmd, "modprobe flexcan && rmmod flexcan");
+    // Take can config down
+    sprintf(cmd, "ifconfig %s down", if_name);
     rv = execute_cmd_ex(cmd, NULL, 0);
-    if (rv < 0)
-    {
-        LogMsg(LOG_ERR, "Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
-        exit(1);
-    }
-    LogMsg(LOG_INFO, "cmd run: modprobe flexcan && rmmod flexcan\n");
+    LogMsg(LOG_INFO, "[CAN] cmd run: %s\n", cmd);
+
 
     sprintf(cmd, "modprobe flexcan");
     rv = execute_cmd_ex(cmd, NULL, 0);
     if (rv < 0)
     {
-        LogMsg(LOG_ERR, "Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
+        LogMsg(LOG_ERR, "[CAN] Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
         exit(1);
     }
-    LogMsg(LOG_INFO, "cmd run: modprobe flexcan\n");
+    LogMsg(LOG_INFO, "[CAN] cmd run: modprobe flexcan\n");
 
-
-    sprintf(cmd, "echo %d >  /sys/devices/platform/FlexCAN.0/bitrate", baudRate);
-    if (execute_cmd_ex(cmd, NULL, 0) < 0)
+    // Load can config
+    sprintf(cmd, "canconfig %s bitrate %d", if_name, baudRate);
+    rv = execute_cmd_ex(cmd, NULL, 0);
+    if (rv < 0)
     {
-        fprintf(stderr, "Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
+        LogMsg(LOG_ERR, "[CAN] Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
         exit(1);
     }
-    LogMsg(LOG_INFO, "cmd run: echo %d >  /sys/devices/platform/FlexCAN.0/bitrate\n", baudRate);
+    LogMsg(LOG_INFO, "[CAN] cmd run: %s\n", cmd);
 
     ep->flags |= _NET_CAN_LOADED;
 
@@ -350,19 +311,19 @@ static ethIf_t * network_open(uint8_t instance, int baudRate)
     rv = execute_cmd_ex(cmd, NULL, 0);
     if (rv < 0)
     {
-        fprintf(stderr, "Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
+        fprintf(stderr, "[CAN] Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
         exit(1);
     }
-    LogMsg(LOG_INFO, "cmd run: ifconfig %s up\n", if_name);
+    LogMsg(LOG_INFO, "[CAN] cmd run: ifconfig %s up\n", if_name);
 
     ep->flags |= _NET_INTERFACE_UP;
 
     return ep;
 }
 
-/****************************************************************************
- * network_close
- */
+/*
+* Close the CAN bus network
+*/
 static int network_close(ethIf_t *ep)
 {
     int status = 0;
@@ -379,24 +340,15 @@ static int network_close(ethIf_t *ep)
             rv = execute_cmd_ex(cmd, NULL, 0);
             if (rv < 0)
             {
-                LogMsg(LOG_ERR, "Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
+                LogMsg(LOG_ERR, "[CAN] Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
                 status = rv;
             }
         }
-        LogMsg(LOG_INFO, "cmd run: ifconfig %s down.\n", ep->if_name);
+        LogMsg(LOG_INFO, "[CAN] cmd run: ifconfig %s down.\n", ep->if_name);
 
         if (ep->flags & _NET_CAN_LOADED)
         {
             ep->flags &= ~_NET_CAN_LOADED;
-
-            sprintf(cmd, "rmmod flexcan");
-            rv = execute_cmd_ex(cmd, NULL, 0);
-            if (rv < 0)
-            {
-                LogMsg(LOG_ERR, "Error: %s: execute_cmd('%s') failed: %s [%d]\n", __FUNCTION__, cmd, strerror(errno), errno);
-                status = rv;
-            }
-            LogMsg(LOG_INFO, "cmd run: rmmod flexcan\n");
         }
 
         free(ep);
@@ -407,10 +359,10 @@ static int network_close(ethIf_t *ep)
 }
 
 
-/****************************************************************************
- * execute_cmd_ex
+/*
+ * Execute linux commands
  */
-static int execute_cmd_ex(const char *cmd, char *result, int result_size)
+static int execute_cmd_ex(const char *cmd, char *result, size_t result_size)
 {
     int status = 0;
     FILE *fp = NULL;
@@ -426,7 +378,7 @@ static int execute_cmd_ex(const char *cmd, char *result, int result_size)
     n = strlen(cmd) + 16;
     if ((icmd = malloc(n)) == NULL)
     {
-        fprintf(stderr, "Error: %s: malloc(%d) failed: %s [%d]\n", __FUNCTION__, n, strerror(errno), errno);
+        fprintf(stderr, "[CAN] Error: %s: malloc(%d) failed: %s [%d]\n", __FUNCTION__, n, strerror(errno), errno);
         status = -1;
         goto e_execute_cmd_ex;
     }
@@ -513,4 +465,3 @@ e_execute_cmd_ex:
 
     return status;
 }
-
